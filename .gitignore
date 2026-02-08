@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Env (do not commit secrets)
+.env
+.env.local
+.env.*.local
+
+# Build / outputs
+dist/
+backend/uploads/
+backend/outputs/
+backend/zips/
+backend/data/
+*.zip
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
