@@ -83,7 +83,7 @@ export default function App() {
   const [limits, setLimits] = useState<LimitsResponse | null>(null);
   const [sessionStats, setSessionStats] = useState<SessionStatsResponse | null>(null);
   const [sessionActivities, setSessionActivities] = useState<SessionActivity[]>([]);
-  const [sessionStatsLoading, setSessionStatsLoading] = useState(false);
+  const [sessionStatsLoading, _setSessionStatsLoading] = useState(false);
   const [clearDataLoading, setClearDataLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 

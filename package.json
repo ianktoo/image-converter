@@ -2,12 +2,14 @@
   "name": "image-converter",
   "private": true,
   "scripts": {
-    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend:wait\"",
     "dev:backend": "cd backend && python -m uvicorn app.main:app --reload --port 8000",
     "dev:frontend": "cd frontend && npm run dev",
+    "dev:frontend:wait": "wait-on http://127.0.0.1:8000/docs -t 30000 && npm run dev:frontend",
     "install:all": "npm install && cd frontend && npm install"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "wait-on": "^8.0.1"
   }
 }
