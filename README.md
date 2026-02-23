@@ -46,6 +46,33 @@ Optional: use `.env` to override defaults.
   - `VITE_APP_TITLE` – app title
   - `VITE_DEBUG=true` – show raw error details in the UI
 
+## Deploy on Vercel (frontend only)
+
+The repo is set up to deploy the **frontend** to [Vercel](https://vercel.com):
+
+1. Import the project in Vercel (GitHub/GitLab/Bitbucket).
+2. Use the default build settings (root directory: project root; `vercel.json` sets build/output).
+3. Add environment variables in the Vercel dashboard if needed:
+   - **`VITE_API_BASE_URL`** – full URL of your backend (e.g. `https://your-api.vercel.app` or another host). Leave empty only if you serve the API from the same origin.
+4. Deploy.
+
+The backend (FastAPI) is not deployed by this config. Run it elsewhere (e.g. Railway, Render, or a Vercel serverless API) and set `VITE_API_BASE_URL` so the frontend can call it.
+
+## Deploy on Render (frontend + backend)
+
+The repo includes a [Render Blueprint](https://docs.render.com/blueprint-spec) so you can deploy both the **frontend** (static site) and **backend** (Python API) on [Render](https://render.com):
+
+1. In the [Render Dashboard](https://dashboard.render.com), go to **New → Blueprint**.
+2. Connect your Git repo; Render will detect `render.yaml` and create two services:
+   - **image-converter-frontend** – static site (Vite build, served from CDN).
+   - **image-converter-api** – web service (FastAPI on Python 3.13).
+3. After the first deploy, set environment variables in the Dashboard:
+   - **Frontend:** `VITE_API_BASE_URL` = your backend URL (e.g. `https://image-converter-api.onrender.com`). Redeploy the frontend after changing it.
+   - **Backend:** `CORS_ORIGINS` = your frontend URL (e.g. `https://image-converter-frontend.onrender.com`). Add `DATABASE_URL` if you use MySQL/Postgres instead of SQLite.
+4. Optional: attach a [persistent disk](https://docs.render.com/disks) to the API service if you want SQLite/data to persist across deploys (otherwise the filesystem is ephemeral).
+
+Python version is set via `backend/.python-version` (3.13).
+
 ## Make commands
 
 If you have `make` installed:

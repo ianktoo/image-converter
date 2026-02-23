@@ -1,0 +1,4 @@
+# Backend is not deployed on Vercel (frontend only)
+backend
+# Shrink upload; install runs on Vercel
+frontend/node_modules
