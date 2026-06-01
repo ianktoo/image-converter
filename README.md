@@ -7,7 +7,10 @@ Convert images and videos to WebP and other formats (React + Python).
 A React single-page app talks to a FastAPI backend over a **session-scoped `/api`**. The
 backend converts media with **Pillow** (images) and **ffmpeg** (video) on a thread pool,
 persists per-session metadata to SQL, and stores files on local disk. There is no login —
-each browser gets an `X-Session-ID` that scopes all of its data.
+each browser gets an `X-Session-ID` that scopes all of its data. Sessions are **ephemeral**:
+they expire after 1 hour of inactivity (sliding window) and a background sweeper purges the
+expired session's rows and files, so users never collide and disk doesn't grow unbounded.
+A session with a batch still processing is never swept and is refreshed when the job finishes.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -76,7 +79,7 @@ Local disk               SQL database  (SQLite default │ MySQL │ SQL Server)
 3. **Save-first library** — `POST /api/media/save` stores originals in `library/` without converting; `POST /api/media/{task_id}/convert` converts a saved original later and attaches outputs to the same item.
 4. **Organize** — projects/folders/tags are session-scoped; media items are enriched with project/folder membership, notes, and tags.
 5. **AI explain** — `POST /api/ai/explain` loads a converted output, sends it to Claude with a prompt/template, and stores the explanation. Requires `ANTHROPIC_API_KEY` (see Configuration).
-6. **Session & cleanup** — every request upserts the session and logs an event; `GET /api/session/stats` and `/api/observability/summary` drive the dashboard; `DELETE /api/session/data` cascades across all tables and removes the associated files.
+6. **Session & cleanup** — every request upserts the session (sliding 1-hour TTL) and logs an event; `GET /api/session/stats` and `/api/observability/summary` drive the dashboard; `DELETE /api/session/data` purges all of the session's rows and files. A background sweeper (every `SESSION_SWEEP_INTERVAL_SECONDS`) auto-purges sessions idle past `SESSION_TTL_SECONDS`, skipping any with a batch still `processing` and refreshing a session's clock when its batch finishes.
 
 ### Frontend ↔ backend wiring
 
@@ -188,6 +191,8 @@ Optional: use `.env` to override defaults.
   - `URL_DOWNLOAD_MAX_MB`, `URL_DOWNLOAD_TIMEOUT` – URL download limits
   - `HOST`, `PORT` – server bind (default `0.0.0.0:8000`)
   - `CORS_ORIGINS` – comma-separated allowed origins (e.g. frontend URL)
+  - `SESSION_TTL_SECONDS` – session inactivity timeout before purge (default `3600` = 1 hour)
+  - `SESSION_SWEEP_INTERVAL_SECONDS` – how often the background sweeper runs (default `300`)
   - `LOG_LEVEL` – e.g. `DEBUG`, `INFO`
 - **Frontend:** copy `frontend/.env.example` to `frontend/.env`. You can set:
   - `VITE_API_BASE_URL` – API base (leave empty when using dev proxy)

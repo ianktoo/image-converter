@@ -3,7 +3,7 @@ Startup ensures required tables exist; on connection failure logs verbosely and 
 import json
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import create_engine, text
@@ -669,6 +669,74 @@ def delete_session_data(session_id: str) -> tuple[list[str], list[tuple[str, Opt
     except Exception as e:
         logger.warning("Failed to clear AI data for session %s: %s", session_id, e)
     return task_ids, batch_zips
+
+
+def purge_session(session_id: str) -> int:
+    """Fully remove a session: all DB rows (activities, batches, events, organize, AI)
+    via delete_session_data, plus its files. delete_session_data already removes library
+    originals; here we also delete the session's output files and batch zips.
+    Returns the number of output/zip files deleted."""
+    task_ids, batch_zips = delete_session_data(session_id)
+    removed = 0
+    # Output filenames embed task_id[:8] (see conversion service), so match on prefix.
+    prefixes = {tid[:8] for tid in task_ids if tid}
+    if prefixes:
+        try:
+            for f in app_config.OUTPUT_DIR.iterdir():
+                if f.is_file() and any(p in f.name for p in prefixes):
+                    try:
+                        f.unlink()
+                        removed += 1
+                    except OSError as e:
+                        logger.warning("Could not delete output %s: %s", f, e)
+        except OSError as e:
+            logger.warning("Could not scan output dir during purge: %s", e)
+    for _batch_id, zip_filename in batch_zips:
+        if zip_filename:
+            p = app_config.BATCH_ZIP_DIR / zip_filename
+            try:
+                if p.is_file():
+                    p.unlink()
+                    removed += 1
+            except OSError as e:
+                logger.warning("Could not delete zip %s: %s", p, e)
+    return removed
+
+
+def get_expired_session_ids(ttl_seconds: int) -> list[str]:
+    """Sessions idle longer than ttl_seconds, EXCLUDING any with a batch still processing
+    (long-running tasks must not be swept out from under the user)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ttl_seconds)).isoformat()
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT session_id FROM sessions
+                WHERE last_seen_at < :cutoff
+                  AND session_id NOT IN (
+                      SELECT session_id FROM batches
+                      WHERE status = 'processing' AND session_id IS NOT NULL
+                  )
+            """),
+            {"cutoff": cutoff},
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def cleanup_expired_sessions(ttl_seconds: int) -> int:
+    """Purge every expired session (rows + files). Returns the count purged. Never raises."""
+    try:
+        expired = get_expired_session_ids(ttl_seconds)
+    except Exception as e:
+        logger.warning("Could not list expired sessions: %s", e)
+        return 0
+    for sid in expired:
+        try:
+            purge_session(sid)
+        except Exception as e:
+            logger.warning("Failed to purge expired session %s: %s", sid, e)
+    if expired:
+        logger.info("Session sweeper purged %d expired session(s)", len(expired))
+    return len(expired)
 
 
 def update_batch_status(

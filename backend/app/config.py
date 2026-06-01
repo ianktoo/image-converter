@@ -109,6 +109,14 @@ PORT = int(os.getenv("PORT", "8000"))
 # CORS: comma-separated origins, e.g. "http://localhost:5173,http://127.0.0.1:5173"
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()]
 
+# Sessions: all data is scoped per browser (X-Session-ID). A session expires after
+# SESSION_TTL_SECONDS of inactivity (sliding window — every request resets the clock).
+# A background sweeper purges expired sessions every SESSION_SWEEP_INTERVAL_SECONDS,
+# deleting their DB rows AND files. Sessions with a batch still "processing" are never
+# swept, and their clock is refreshed when the batch finishes (so results stay downloadable).
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
+SESSION_SWEEP_INTERVAL_SECONDS = int(os.getenv("SESSION_SWEEP_INTERVAL_SECONDS", "300"))
+
 # AI (Claude) settings
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6").strip()

@@ -1,4 +1,5 @@
 """FastAPI application entry point."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,11 +12,29 @@ from app.ai import ensure_ai_tables
 from app.api.ai import router as ai_router
 from app.api.organize import router as organize_router
 from app.api.routes import router
-from app.config import CORS_ORIGINS, logger as config_logger
-from app.db import init_db
+from app.config import (
+    CORS_ORIGINS,
+    SESSION_SWEEP_INTERVAL_SECONDS,
+    SESSION_TTL_SECONDS,
+    logger as config_logger,
+)
+from app.db import cleanup_expired_sessions, init_db
 from app.organize import ensure_organize_tables
 
 logging.getLogger("uvicorn").setLevel(logging.INFO)
+
+
+async def _session_sweeper():
+    """Periodically purge sessions idle past the TTL. Runs the blocking DB work in a
+    thread so it never stalls the event loop. Sessions with an active batch are skipped."""
+    while True:
+        try:
+            await asyncio.sleep(SESSION_SWEEP_INTERVAL_SECONDS)
+            await asyncio.to_thread(cleanup_expired_sessions, SESSION_TTL_SECONDS)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:  # pragma: no cover - defensive; sweeper must stay alive
+            config_logger.warning("Session sweep failed: %s", e)
 
 
 @asynccontextmanager
@@ -23,8 +42,18 @@ async def lifespan(app: FastAPI):
     init_db()
     ensure_organize_tables()
     ensure_ai_tables()
-    config_logger.info("Converter API started")
+    sweeper = asyncio.create_task(_session_sweeper())
+    config_logger.info(
+        "Converter API started (session TTL %ss, sweep every %ss)",
+        SESSION_TTL_SECONDS,
+        SESSION_SWEEP_INTERVAL_SECONDS,
+    )
     yield
+    sweeper.cancel()
+    try:
+        await sweeper
+    except asyncio.CancelledError:
+        pass
     config_logger.info("Converter API shutting down")
 
 

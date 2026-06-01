@@ -38,10 +38,10 @@ from app.config import (
 )
 from app.conversion.service import get_conversion_service
 from app.db import (
-    delete_session_data,
     get_observability_summary,
     get_session_activities,
     get_session_stats,
+    purge_session,
     record_activity,
     record_event,
     touch_session,
@@ -611,6 +611,13 @@ def _run_batch_and_zip(
                     d.unlink()
                 except OSError:
                     pass
+        # Refresh the session so the user gets a fresh TTL window to download results,
+        # even if the job ran longer than the inactivity timeout.
+        if session_id:
+            try:
+                touch_session(session_id)
+            except Exception as e:
+                logger.debug("touch_session after batch failed: %s", e)
 
 
 @router.post("/upload-batch")
@@ -714,8 +721,9 @@ async def upload_batch(
 
 
 @router.get("/batch/{batch_id}")
-def batch_status(batch_id: str):
-    """Get batch job status; zip_filename present when status=completed."""
+def batch_status(batch_id: str, session_id: str = Depends(get_or_create_session_id)):
+    """Get batch job status; zip_filename present when status=completed.
+    Depends on the session so that polling a running job keeps the session warm."""
     job = get_batch(batch_id)
     if not job:
         raise HTTPException(404, "Batch not found")
@@ -794,24 +802,9 @@ def session_activities(
 
 @router.delete("/session/data")
 def session_delete_data(session_id: str = Depends(get_or_create_session_id)):
-    """Delete all session data: activities, batch records, and associated output/zip files."""
-    task_ids, batch_zips = delete_session_data(session_id)
-    for tid in task_ids:
-        prefix = tid[:8]
-        for f in OUTPUT_DIR.iterdir():
-            if f.is_file() and prefix in f.name:
-                try:
-                    f.unlink()
-                except OSError as e:
-                    logger.warning("Could not delete output file %s: %s", f, e)
-    for batch_id, zip_filename in batch_zips:
-        if zip_filename:
-            path = BATCH_ZIP_DIR / zip_filename
-            if path.is_file():
-                try:
-                    path.unlink()
-                except OSError as e:
-                    logger.warning("Could not delete zip %s: %s", path, e)
+    """Delete all session data: activities, batch records, organize/AI rows, and files
+    (outputs, zips, library originals). Same purge the sweeper applies on expiry."""
+    purge_session(session_id)
     return {"ok": True, "message": "Session data cleared"}
 
 
