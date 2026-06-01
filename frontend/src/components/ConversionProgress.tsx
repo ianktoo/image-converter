@@ -59,8 +59,8 @@ export function ConversionProgress({ active, onComplete }: ConversionProgressPro
   if (!active && !completing) return null;
 
   return (
-    <div className="rounded-lg border border-neutral-700 bg-neutral-900/90 p-6 shadow-lg">
-      <p className="mb-3 text-center text-sm font-medium text-neutral-300">
+    <div className="rounded-lg border bg-card p-6 shadow-sm">
+      <p className="mb-3 text-center text-sm font-medium text-foreground">
         {MESSAGES[messageIndex]}
       </p>
       <Progress value={completing ? 100 : progress} className="h-2" />

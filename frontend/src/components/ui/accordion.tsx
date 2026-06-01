@@ -1,4 +1,5 @@
 import { createContext, useContext, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type AccordionContextValue = {
@@ -15,7 +16,6 @@ function useAccordion() {
 }
 
 type AccordionProps = {
-  /** Values of items that are open by default */
   defaultValue?: string[];
   className?: string;
   children: React.ReactNode;
@@ -26,7 +26,7 @@ export function Accordion({ defaultValue = [], className, children }: AccordionP
 
   const toggle = (value: string) => {
     setOpenItems((prev) =>
-      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]
+      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
   };
 
@@ -46,7 +46,7 @@ type AccordionItemProps = {
 export function AccordionItem({ value, className, children }: AccordionItemProps) {
   return (
     <div
-      className={cn("rounded-lg border border-neutral-800 overflow-hidden", className)}
+      className={cn("overflow-hidden rounded-lg border", className)}
       data-value={value}
     >
       {children}
@@ -69,15 +69,19 @@ export function AccordionTrigger({ value, className, children }: AccordionTrigge
       type="button"
       onClick={() => ctx.toggle(value)}
       className={cn(
-        "flex w-full items-center justify-between gap-2 px-4 py-3 text-left text-sm font-medium text-neutral-200 hover:bg-neutral-800/50 transition-colors",
-        className
+        "flex w-full items-center justify-between gap-2 px-4 py-3 text-left text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground",
+        className,
       )}
       aria-expanded={isOpen}
     >
       {children}
-      <span className="shrink-0 text-neutral-500" aria-hidden>
-        {isOpen ? "−" : "+"}
-      </span>
+      <ChevronDown
+        className={cn(
+          "h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200",
+          isOpen && "rotate-180",
+        )}
+        aria-hidden
+      />
     </button>
   );
 }
@@ -93,7 +97,7 @@ export function AccordionContent({ value, className, children }: AccordionConten
   if (!ctx.openItems.includes(value)) return null;
 
   return (
-    <div className={cn("border-t border-neutral-800 px-4 py-3 text-neutral-300", className)}>
+    <div className={cn("border-t px-4 py-3 text-sm", className)}>
       {children}
     </div>
   );

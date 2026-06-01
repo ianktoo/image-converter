@@ -16,12 +16,30 @@ load_dotenv(BASE_DIR.parent / ".env")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads")))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", str(BASE_DIR / "outputs")))
 BATCH_ZIP_DIR = Path(os.getenv("BATCH_ZIP_DIR", str(BASE_DIR / "zips")))
+# Persisted originals for the media library (survive conversion cleanup).
+LIBRARY_DIR = Path(os.getenv("LIBRARY_DIR", str(BASE_DIR / "library")))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 BATCH_ZIP_DIR.mkdir(parents=True, exist_ok=True)
+LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+
+# HEIF/HEIC support via pillow-heif (registers a decoder into Pillow). Optional:
+# if the package is missing we simply don't advertise HEIC as an input format.
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    HEIF_SUPPORTED = True
+except Exception:  # pragma: no cover - optional dependency
+    HEIF_SUPPORTED = False
+    logging.getLogger("converter").warning(
+        "pillow-heif not installed; HEIC/HEIF input will not be supported"
+    )
 
 # Supported formats
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp", ".avif"}
+if HEIF_SUPPORTED:
+    IMAGE_EXTENSIONS |= {".heic", ".heif"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v"}
 
 # Conversion options (env overrides)
@@ -90,6 +108,21 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 # CORS: comma-separated origins, e.g. "http://localhost:5173,http://127.0.0.1:5173"
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()]
+
+# Sessions: all data is scoped per browser (X-Session-ID). A session expires after
+# SESSION_TTL_SECONDS of inactivity (sliding window — every request resets the clock).
+# A background sweeper purges expired sessions every SESSION_SWEEP_INTERVAL_SECONDS,
+# deleting their DB rows AND files. Sessions with a batch still "processing" are never
+# swept, and their clock is refreshed when the batch finishes (so results stay downloadable).
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
+SESSION_SWEEP_INTERVAL_SECONDS = int(os.getenv("SESSION_SWEEP_INTERVAL_SECONDS", "300"))
+
+# AI (Claude) settings
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6").strip()
+ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", "2048"))
+# Hard cap on image size sent to Claude (bytes) to keep prompts efficient. Larger inputs are still allowed via the conversion pipeline.
+AI_MAX_IMAGE_BYTES = int(os.getenv("AI_MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

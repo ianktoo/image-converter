@@ -1,22 +1,59 @@
 """FastAPI application entry point."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
+from app.ai import ensure_ai_tables
+from app.api.ai import router as ai_router
+from app.api.organize import router as organize_router
 from app.api.routes import router
-from app.config import CORS_ORIGINS, logger as config_logger
-from app.db import init_db
+from app.config import (
+    CORS_ORIGINS,
+    SESSION_SWEEP_INTERVAL_SECONDS,
+    SESSION_TTL_SECONDS,
+    logger as config_logger,
+)
+from app.db import cleanup_expired_sessions, init_db
+from app.organize import ensure_organize_tables
 
 logging.getLogger("uvicorn").setLevel(logging.INFO)
+
+
+async def _session_sweeper():
+    """Periodically purge sessions idle past the TTL. Runs the blocking DB work in a
+    thread so it never stalls the event loop. Sessions with an active batch are skipped."""
+    while True:
+        try:
+            await asyncio.sleep(SESSION_SWEEP_INTERVAL_SECONDS)
+            await asyncio.to_thread(cleanup_expired_sessions, SESSION_TTL_SECONDS)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:  # pragma: no cover - defensive; sweeper must stay alive
+            config_logger.warning("Session sweep failed: %s", e)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    config_logger.info("Converter API started")
+    ensure_organize_tables()
+    ensure_ai_tables()
+    sweeper = asyncio.create_task(_session_sweeper())
+    config_logger.info(
+        "Converter API started (session TTL %ss, sweep every %ss)",
+        SESSION_TTL_SECONDS,
+        SESSION_SWEEP_INTERVAL_SECONDS,
+    )
     yield
+    sweeper.cancel()
+    try:
+        await sweeper
+    except asyncio.CancelledError:
+        pass
     config_logger.info("Converter API shutting down")
 
 
@@ -45,6 +82,17 @@ async def session_header_middleware(request, call_next):
 
 app.middleware("http")(session_header_middleware)
 app.include_router(router)
+app.include_router(organize_router)
+app.include_router(ai_router)
+
+# Serve the built frontend (frontend/dist) when present so the whole app runs on
+# one origin/port in production. API routes above are registered first and keep
+# priority; this catch-all mount only handles non-/api paths. In dev (no dist),
+# the Vite server serves the UI and proxies /api here instead.
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
+    config_logger.info("Serving frontend from %s", _FRONTEND_DIST)
 
 
 if __name__ == "__main__":

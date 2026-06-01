@@ -23,6 +23,7 @@ from app.batch import (
 from app.config import (
     BATCH_ZIP_DIR,
     IMAGE_EXTENSIONS,
+    LIBRARY_DIR,
     MAX_IMAGE_SIZE_BYTES,
     MAX_IMAGES_PER_UPLOAD,
     MAX_VIDEO_SIZE_BYTES,
@@ -37,11 +38,16 @@ from app.config import (
 )
 from app.conversion.service import get_conversion_service
 from app.db import (
-    delete_session_data,
+    get_observability_summary,
     get_session_activities,
     get_session_stats,
+    purge_session,
     record_activity,
+    record_event,
+    touch_session,
+    update_activity_outputs,
 )
+from app.organize import db as orga
 
 logger = logging.getLogger("converter.api")
 router = APIRouter(prefix="/api", tags=["converter"])
@@ -62,12 +68,16 @@ def _max_url_download_bytes_for_ext(ext: str) -> int:
 
 
 def get_or_create_session_id(request: Request) -> str:
-    """Use X-Session-ID header or generate and attach to request for response header."""
+    """Use X-Session-ID header or generate and attach to request for response header.
+    Also records/refreshes the session for observability (best-effort)."""
     sid = (request.headers.get("X-Session-ID") or "").strip()
-    if sid:
-        return sid
-    sid = str(uuid.uuid4())
-    request.state.session_id = sid
+    if not sid:
+        sid = str(uuid.uuid4())
+        request.state.session_id = sid
+    try:
+        touch_session(sid, request.headers.get("User-Agent"))
+    except Exception as e:
+        logger.debug("touch_session failed: %s", e)
     return sid
 
 
@@ -145,9 +155,25 @@ _EXT_TO_MIME = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
     ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
     ".bmp": "image/bmp", ".tiff": "image/tiff", ".tif": "image/tiff",
+    ".heic": "image/heic", ".heif": "image/heif",
     ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
     ".avi": "video/x-msvideo", ".mkv": "video/x-matroska", ".m4v": "video/mp4",
 }
+
+
+def _kind_and_mime(filename: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Return (kind, mime) derived from a filename. kind is 'image' | 'video' | None."""
+    if not filename:
+        return None, None
+    ext = Path(filename).suffix.lower()
+    if not ext:
+        return None, None
+    mime = _EXT_TO_MIME.get(ext)
+    if ext in IMAGE_EXTENSIONS:
+        return "image", mime
+    if ext in VIDEO_EXTENSIONS:
+        return "video", mime
+    return None, mime
 
 
 @router.post("/url-preview")
@@ -306,6 +332,7 @@ async def upload_multiple(
     strip_metadata: bool = Query(False),
     progressive: bool = Query(False),
     aggressive_compression: bool = Query(False),
+    save_to_library: bool = Query(False, description="Persist originals to the media library"),
     crop_x: Optional[float] = Query(None, ge=0, le=1),
     crop_y: Optional[float] = Query(None, ge=0, le=1),
     crop_width: Optional[float] = Query(None, ge=0.01, le=1),
@@ -382,11 +409,29 @@ async def upload_multiple(
             aggressive_compression=aggressive_compression,
             crop=crop,
         )
-        if background_tasks:
+        # When saving to the library, move each original into LIBRARY_DIR so it
+        # persists past conversion cleanup. Match uploads to tasks by filename.
+        # A conversion task's .filename equals its uploaded path's .name, so key on that.
+        source_by_name: dict[str, list[Path]] = {}
+        if save_to_library:
             for d in uploaded:
-                background_tasks.add_task(svc.cleanup_upload, d)
+                source_by_name.setdefault(d.name, []).append(d)
+
         for t in tasks:
             out_bytes = sum(t.output_sizes) if getattr(t, "output_sizes", None) else None
+            kind, mime = _kind_and_mime(t.filename)
+            output_names = [Path(p).name for p in t.output_paths]
+            stored_name: Optional[str] = None
+            if save_to_library:
+                candidates = source_by_name.get(t.filename or "")
+                if candidates:
+                    src = candidates.pop(0)
+                    stored_name = f"{t.task_id}_{Path(t.filename).name}"
+                    try:
+                        src.replace(LIBRARY_DIR / stored_name)
+                    except OSError as e:
+                        logger.warning("Could not persist original %s: %s", src, e)
+                        stored_name = None
             record_activity(
                 session_id,
                 t.task_id,
@@ -395,7 +440,19 @@ async def upload_multiple(
                 input_bytes=getattr(t, "input_size", None),
                 output_bytes=out_bytes,
                 output_count=len(t.output_paths),
+                kind=kind,
+                mime_type=mime,
+                output_paths=output_names,
+                source_path=stored_name,
             )
+            record_event(
+                session_id, "convert", target_id=t.task_id,
+                detail={"status": t.status.value, "saved": bool(stored_name)},
+            )
+        # Clean up any uploads that were NOT persisted to the library.
+        if background_tasks:
+            for d in uploaded:
+                background_tasks.add_task(svc.cleanup_upload, d)
         return {
             "tasks": [_task_to_dict(t) for t in tasks],
         }
@@ -457,6 +514,8 @@ def upload_from_url(
             background_tasks.add_task(svc.cleanup_upload, dest)
         for t in tasks:
             out_bytes = sum(t.output_sizes) if getattr(t, "output_sizes", None) else None
+            kind, mime = _kind_and_mime(t.filename or filename)
+            output_names = [Path(p).name for p in t.output_paths]
             record_activity(
                 session_id,
                 t.task_id,
@@ -465,6 +524,9 @@ def upload_from_url(
                 input_bytes=getattr(t, "input_size", None),
                 output_bytes=out_bytes,
                 output_count=len(t.output_paths),
+                kind=kind,
+                mime_type=mime,
+                output_paths=output_names,
             )
         out = [_task_to_dict(t) for t in tasks]
         if out and filename:
@@ -512,6 +574,8 @@ def _run_batch_and_zip(
         if session_id:
             for t in tasks:
                 out_bytes = sum(t.output_sizes) if getattr(t, "output_sizes", None) else None
+                kind, mime = _kind_and_mime(t.filename)
+                output_names = [Path(p).name for p in t.output_paths]
                 record_activity(
                     session_id,
                     t.task_id,
@@ -521,6 +585,9 @@ def _run_batch_and_zip(
                     input_bytes=getattr(t, "input_size", None),
                     output_bytes=out_bytes,
                     output_count=len(t.output_paths),
+                    kind=kind,
+                    mime_type=mime,
+                    output_paths=output_names,
                 )
         task_id_to_paths = [(t.task_id, t.output_paths) for t in tasks if t.output_paths]
         if task_id_to_paths:
@@ -544,6 +611,13 @@ def _run_batch_and_zip(
                     d.unlink()
                 except OSError:
                     pass
+        # Refresh the session so the user gets a fresh TTL window to download results,
+        # even if the job ran longer than the inactivity timeout.
+        if session_id:
+            try:
+                touch_session(session_id)
+            except Exception as e:
+                logger.debug("touch_session after batch failed: %s", e)
 
 
 @router.post("/upload-batch")
@@ -647,8 +721,9 @@ async def upload_batch(
 
 
 @router.get("/batch/{batch_id}")
-def batch_status(batch_id: str):
-    """Get batch job status; zip_filename present when status=completed."""
+def batch_status(batch_id: str, session_id: str = Depends(get_or_create_session_id)):
+    """Get batch job status; zip_filename present when status=completed.
+    Depends on the session so that polling a running job keeps the session warm."""
     job = get_batch(batch_id)
     if not job:
         raise HTTPException(404, "Batch not found")
@@ -727,24 +802,9 @@ def session_activities(
 
 @router.delete("/session/data")
 def session_delete_data(session_id: str = Depends(get_or_create_session_id)):
-    """Delete all session data: activities, batch records, and associated output/zip files."""
-    task_ids, batch_zips = delete_session_data(session_id)
-    for tid in task_ids:
-        prefix = tid[:8]
-        for f in OUTPUT_DIR.iterdir():
-            if f.is_file() and prefix in f.name:
-                try:
-                    f.unlink()
-                except OSError as e:
-                    logger.warning("Could not delete output file %s: %s", f, e)
-    for batch_id, zip_filename in batch_zips:
-        if zip_filename:
-            path = BATCH_ZIP_DIR / zip_filename
-            if path.is_file():
-                try:
-                    path.unlink()
-                except OSError as e:
-                    logger.warning("Could not delete zip %s: %s", path, e)
+    """Delete all session data: activities, batch records, organize/AI rows, and files
+    (outputs, zips, library originals). Same purge the sweeper applies on expiry."""
+    purge_session(session_id)
     return {"ok": True, "message": "Session data cleared"}
 
 
@@ -788,4 +848,207 @@ def delete_task_outputs(task_id: str):
     """Remove output files for a task."""
     svc = get_conversion_service()
     svc.cleanup_task_outputs(task_id)
+    return {"ok": True}
+
+
+# ============================================================================
+# Observability
+# ============================================================================
+
+@router.get("/observability/summary")
+def observability_summary(session_id: str = Depends(get_or_create_session_id)):
+    """Cross-session metrics for the dashboard strip (sessions, items, conversions, storage)."""
+    return get_observability_summary()
+
+
+# ============================================================================
+# Media library: save originals first, then organize / convert
+# ============================================================================
+
+def _persist_original(file_bytes_path: Path, original_name: str, task_id: str) -> str:
+    """Move an already-written upload into LIBRARY_DIR. Returns the stored filename."""
+    stored_name = f"{task_id}_{original_name}"
+    dest = LIBRARY_DIR / stored_name
+    file_bytes_path.replace(dest)
+    return stored_name
+
+
+@router.post("/media/save")
+async def media_save(
+    files: list[UploadFile] = File(...),
+    project_id: Optional[str] = Query(None),
+    folder_id: Optional[str] = Query(None),
+    session_id: str = Depends(get_or_create_session_id),
+):
+    """Save uploaded files into the media library WITHOUT converting them.
+    Optionally drops them straight into a project/folder."""
+    if project_id and not orga.get_project(session_id, project_id):
+        raise HTTPException(400, "Unknown project_id")
+    if folder_id and not orga.get_folder(session_id, folder_id):
+        raise HTTPException(400, "Unknown folder_id")
+
+    to_save: list[tuple[UploadFile, str]] = []
+    for file in files:
+        ext = Path(file.filename or "").suffix.lower()
+        if ext in ALL_EXTENSIONS:
+            to_save.append((file, ext))
+    if not to_save:
+        raise HTTPException(400, "No valid files to save")
+
+    saved_items: list[dict] = []
+    for file, ext in to_save:
+        max_bytes = _max_upload_bytes_for_ext(ext)
+        max_mb = max_bytes // (1024 * 1024)
+        task_id = str(uuid.uuid4())
+        tmp = UPLOAD_DIR / f"{task_id}_{file.filename}"
+        try:
+            total = 0
+            with open(tmp, "wb") as f:
+                while chunk := await file.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        tmp.unlink(missing_ok=True)
+                        raise HTTPException(413, f"File too large: {file.filename} (max {max_mb} MB)")
+                    f.write(chunk)
+            stored_name = _persist_original(tmp, file.filename or f"{task_id}{ext}", task_id)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Save failed for %s: %s", file.filename, e)
+            tmp.unlink(missing_ok=True)
+            continue
+
+        kind, mime = _kind_and_mime(file.filename)
+        record_activity(
+            session_id,
+            task_id,
+            file.filename,
+            "saved",
+            input_bytes=total,
+            output_count=0,
+            kind=kind,
+            mime_type=mime,
+            source_path=stored_name,
+        )
+        if project_id or folder_id:
+            orga.update_media(session_id, task_id, project_id=project_id, folder_id=folder_id)
+        record_event(session_id, "save", target_id=task_id, detail={"filename": file.filename, "kind": kind})
+        item = orga.get_media(session_id, task_id)
+        if item:
+            item["tags"] = orga.get_tags_for_task(session_id, task_id)
+            saved_items.append(item)
+
+    if not saved_items:
+        raise HTTPException(400, "No files were saved")
+    return {"items": saved_items}
+
+
+@router.get("/media/{task_id}/source")
+def media_source(task_id: str, session_id: str = Depends(get_or_create_session_id)):
+    """Serve the persisted original file for a library item."""
+    stored_name = orga.get_source_path(session_id, task_id)
+    if not stored_name:
+        raise HTTPException(404, "No saved original for this item")
+    path = LIBRARY_DIR / stored_name
+    if not path.is_file():
+        raise HTTPException(404, "Source file not found")
+    ext = path.suffix.lower()
+    media_type = _EXT_TO_MIME.get(ext, "application/octet-stream")
+    return FileResponse(path, media_type=media_type)
+
+
+@router.get("/media/{task_id}/output/{filename}")
+def media_output(task_id: str, filename: str, session_id: str = Depends(get_or_create_session_id)):
+    """Serve a converted output for a media item, validated against the DB record
+    (works across restarts, unlike /download which needs the in-memory task)."""
+    item = orga.get_media(session_id, task_id)
+    if not item:
+        raise HTTPException(404, "Media not found")
+    if filename not in (item.get("outputs") or []):
+        raise HTTPException(403, "File not part of this item")
+    path = OUTPUT_DIR / filename
+    if not path.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(path, filename=filename)
+
+
+@router.post("/media/{task_id}/convert")
+def media_convert(
+    task_id: str,
+    formats: str = Query("webp", description="Comma-separated output formats"),
+    web_optimized: bool = Query(False),
+    sizes: str = Query("original"),
+    fill_mode: str = Query("crop"),
+    fill_color: str = Query(""),
+    size_reduction_percent: int = Query(0, ge=0, le=80),
+    strip_metadata: bool = Query(False),
+    progressive: bool = Query(False),
+    aggressive_compression: bool = Query(False),
+    session_id: str = Depends(get_or_create_session_id),
+):
+    """Convert a saved library item's original through the standard pipeline and
+    attach the outputs back to the same media item."""
+    item = orga.get_media(session_id, task_id)
+    if not item:
+        raise HTTPException(404, "Media not found")
+    stored_name = orga.get_source_path(session_id, task_id)
+    if not stored_name:
+        raise HTTPException(400, "This item has no saved original to convert")
+    source = LIBRARY_DIR / stored_name
+    if not source.is_file():
+        raise HTTPException(404, "Source file not found")
+
+    output_formats = [f.strip().lower() for f in formats.split(",") if f.strip()] or ["webp"]
+    size_list = [s.strip() for s in sizes.split(",") if s.strip()] or ["original"]
+
+    svc = get_conversion_service()
+    task = svc.convert(
+        source,
+        output_formats,
+        web_optimized=web_optimized,
+        size_presets=size_list,
+        fill_mode=fill_mode or "crop",
+        fill_color=fill_color.strip() or None,
+        size_reduction_percent=size_reduction_percent or None,
+        strip_metadata=strip_metadata,
+        progressive=progressive,
+        aggressive_compression=aggressive_compression,
+    )
+    output_names = [Path(p).name for p in task.output_paths]
+    out_bytes = sum(task.output_sizes) if getattr(task, "output_sizes", None) else None
+    update_activity_outputs(
+        session_id,
+        task_id,
+        status=task.status.value,
+        output_bytes=out_bytes,
+        output_count=len(output_names),
+        output_paths=output_names,
+    )
+    record_event(
+        session_id, "convert", target_id=task_id,
+        detail={"formats": output_formats, "from_library": True, "status": task.status.value},
+    )
+    updated = orga.get_media(session_id, task_id)
+    if updated:
+        updated["tags"] = orga.get_tags_for_task(session_id, task_id)
+    return updated or {}
+
+
+@router.delete("/media/{task_id}")
+def media_delete(task_id: str, session_id: str = Depends(get_or_create_session_id)):
+    """Delete a media item: DB row, tag links, persisted original, and output files."""
+    result = orga.delete_media(session_id, task_id)
+    if result is None:
+        raise HTTPException(404, "Media not found")
+    if result.get("source_path"):
+        try:
+            (LIBRARY_DIR / result["source_path"]).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Could not delete source for %s: %s", task_id, e)
+    for name in result.get("outputs") or []:
+        try:
+            (OUTPUT_DIR / name).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Could not delete output %s: %s", name, e)
+    record_event(session_id, "delete", target_id=task_id)
     return {"ok": True}

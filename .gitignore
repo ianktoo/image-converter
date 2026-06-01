@@ -15,6 +15,7 @@ backend/uploads/
 backend/outputs/
 backend/zips/
 backend/data/
+backend/library/
 *.zip
 
 # IDE

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.config import (
     DEFAULT_QUALITY,
@@ -134,6 +134,9 @@ class ConversionService:
 
         try:
             with Image.open(src) as img:
+                # Honor EXIF orientation (common in HEIC/JPEG from phones) so
+                # converted output isn't rotated sideways.
+                img = ImageOps.exif_transpose(img) or img
                 if img.mode in ("RGBA", "P") and "jpeg" in out_formats:
                     base_img = img.convert("RGB")
                 elif img.mode not in ("RGB", "RGBA"):

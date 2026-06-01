@@ -1,3 +1,4 @@
+import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const FRIENDLY_MESSAGES: Record<string, string> = {
@@ -16,7 +17,6 @@ function getDisplayMessage(message: string): string {
 type ErrorAlertProps = {
   message: string;
   onDismiss: () => void;
-  /** Optional retry (e.g. for initial load). */
   onRetry?: () => void;
 };
 
@@ -25,22 +25,17 @@ export function ErrorAlert({ message, onDismiss, onRetry }: ErrorAlertProps) {
   return (
     <div
       role="alert"
-      className="rounded-lg border border-red-800 bg-red-950/40 p-4 text-red-200 shadow-sm"
+      className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive shadow-sm"
     >
       <div className="flex items-start gap-3">
-        <div className="flex-1 min-w-0">
-          <p className="font-medium text-red-100">Something went wrong</p>
-          <p className="mt-1 text-sm">{display}</p>
+        <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">Something went wrong</p>
+          <p className="mt-1 text-sm opacity-90">{display}</p>
         </div>
         <div className="flex shrink-0 gap-2">
           {onRetry && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="border-red-700 text-red-200 hover:bg-red-900/50"
-              onClick={onRetry}
-            >
+            <Button type="button" variant="outline" size="sm" onClick={onRetry}>
               Retry
             </Button>
           )}
@@ -48,7 +43,6 @@ export function ErrorAlert({ message, onDismiss, onRetry }: ErrorAlertProps) {
             type="button"
             variant="ghost"
             size="sm"
-            className="text-red-300 hover:bg-red-900/30 hover:text-red-100"
             onClick={onDismiss}
             aria-label="Dismiss error"
           >

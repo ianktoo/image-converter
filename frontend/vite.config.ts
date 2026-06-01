@@ -39,5 +39,10 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
   },
-  server: { proxy: { "/api": "http://127.0.0.1:8000" } },
+  server: {
+    proxy: { "/api": "http://127.0.0.1:8000" },
+    // Bind-mount Windows host -> Linux container does not deliver native fs events
+    // reliably. Polling guarantees Vite sees file changes. Slightly more CPU, fine for dev.
+    watch: { usePolling: true, interval: 250 },
+  },
 });
