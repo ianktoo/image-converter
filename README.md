@@ -45,6 +45,57 @@ This starts both services with live reload:
 
 Uploads, outputs, zips and the SQLite database persist in named Docker volumes (`backend-uploads`, `backend-outputs`, `backend-zips`, `backend-data`). To wipe them: `docker compose down -v`.
 
+## Run locally as one app (custom hostname, single port, auto-start)
+
+For a "production-like" local install that serves the built frontend **and** the API from
+a single origin under a friendly name — **http://image-converter.test:7420** — and starts
+automatically when you log into Windows.
+
+How it works: when `frontend/dist` exists, the FastAPI app (`backend/app/main.py`) mounts
+it at `/`, so the UI and the `/api` routes share one port. No Vite proxy, no CORS.
+
+**One-time setup:**
+
+1. Map the hostname to loopback. In an **elevated** PowerShell (Run as administrator):
+
+   ```powershell
+   Add-Content -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Value "127.0.0.1`timage-converter.test" -Encoding ASCII
+   ipconfig /flushdns
+   ```
+
+   > `.test` is reserved for local use and resolves instantly via the hosts file. Avoid
+   > `.local` on Windows — it triggers mDNS lookups that are slow/flaky.
+
+2. Add the auto-start shortcut (runs at every logon). Create a shortcut in your Startup
+   folder (`Win + R` → `shell:startup`) that runs:
+
+   ```
+   powershell.exe -ExecutionPolicy Bypass -File "C:\path\to\image-converter\serve-prod.ps1"
+   ```
+
+**Scripts:**
+
+- **`serve-prod.ps1`** — the server. Builds the frontend if `frontend/dist` is missing
+  (`-Build` forces a rebuild), then runs uvicorn from `backend/.venv` on `127.0.0.1:7420`.
+  It refuses to start a second instance if the port is already in use.
+- **`app.ps1`** — control script:
+
+  ```powershell
+  .\app.ps1 status     # RUNNING + PID, or STOPPED
+  .\app.ps1 start      # start (no-op if already running)
+  .\app.ps1 stop       # stop the running server
+  .\app.ps1 restart    # stop then start
+  ```
+
+  `status` always prints the PID, so you can also stop it manually with
+  `Stop-Process -Id <PID>`. To see what holds the port:
+  `Get-NetTCPConnection -LocalPort 7420 -State Listen`.
+
+To change the port, edit `$AppPort` near the top of both `serve-prod.ps1` and `app.ps1`.
+
+This is independent of `npm run dev` — dev mode (below) still serves the UI via Vite with
+hot reload and proxies `/api` to port 8000 as usual.
+
 ## Configuration (env files)
 
 Optional: use `.env` to override defaults.
