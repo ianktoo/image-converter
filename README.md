@@ -2,6 +2,88 @@
 
 Convert images and videos to WebP and other formats (React + Python).
 
+## Architecture
+
+A React single-page app talks to a FastAPI backend over a **session-scoped `/api`**. The
+backend converts media with **Pillow** (images) and **ffmpeg** (video) on a thread pool,
+persists per-session metadata to SQL, and stores files on local disk. There is no login —
+each browser gets an `X-Session-ID` that scopes all of its data.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Browser — React SPA (Vite, TypeScript, shadcn/ui, Tailwind, PWA)          │
+│  Views: Convert · Media · Projects · Tags · Gallery · AI Explain           │
+│  (view-context switches views; no router)                                  │
+│  lib/api.ts  →  sends X-Session-ID (stored in localStorage)                │
+└───────────────┬────────────────────────────────────────────────────────────┘
+                │  HTTP  /api/*
+                ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  FastAPI app (backend/app/main.py)                                         │
+│   • CORS + session-header middleware (returns X-Session-ID on new sessions)│
+│   • Routers, all under /api:  routes.py (convert) · organize.py · ai.py    │
+│   • Serves frontend/dist at "/" when present → single-port prod mode       │
+└───┬───────────────────────┬────────────────────────┬───────────────────────┘
+    │                       │                        │
+    ▼                       ▼                        ▼
+ConversionService       organize/db.py +         ai/service.py
+(singleton, thread      ai/db.py + db.py         (Anthropic SDK)
+ pool; in-memory        (SQLAlchemy Core)              │
+ task registry)              │                         ▼
+ • Pillow  (images)          │                   Claude API (vision)
+ • ffmpeg  (video)           │
+    │                        │
+    ▼                        ▼
+Local disk               SQL database  (SQLite default │ MySQL │ SQL Server)
+ uploads/  outputs/       sessions · session_activities · batches · events
+ zips/     library/       projects · folders · tags · media_tags
+                          prompt_templates · ai_explanations
+```
+
+### Tech stack
+
+| Layer        | Choices                                                                 |
+|--------------|-------------------------------------------------------------------------|
+| Frontend     | React + Vite + TypeScript, shadcn/ui, Tailwind, PWA (`vite-plugin-pwa`)  |
+| Backend      | FastAPI, Uvicorn, Pydantic                                              |
+| Conversion   | Pillow (+ `pillow-heif` for HEIC), ffmpeg (external binary) for video    |
+| Persistence  | SQLAlchemy Core — SQLite by default, MySQL or SQL Server via env         |
+| AI           | Anthropic Claude (vision) via the `anthropic` SDK                        |
+
+### Backend modules
+
+- **`api/routes.py`** — convert/upload, URL import, batch + zip, downloads, session stats, media library.
+- **`api/organize.py`** — projects, folders, tags, and media CRUD (media is a view over `session_activities`).
+- **`api/ai.py`** — prompt templates and `/ai/explain` (sends a converted output to Claude).
+- **`conversion/service.py`** — `ConversionService` singleton: Pillow image pipeline (resize/crop/format/quality), ffmpeg video pipeline, run in a `ThreadPoolExecutor`; tasks tracked in memory.
+- **`batch.py`** — background batch jobs + zip building (`flat | by_file | by_format`); state persisted so it survives restarts.
+- **`db.py`** — engine, DDL, session/activity/event/observability queries, and a fallback chain (configured DB → SQLite file → in-memory) so the app always starts.
+
+### Storage
+
+| Dir                | Holds                                                       |
+|--------------------|-------------------------------------------------------------|
+| `backend/uploads`  | Incoming files (deleted after conversion unless saved)      |
+| `backend/outputs`  | Converted results, served via download endpoints            |
+| `backend/zips`     | Batch zip archives                                          |
+| `backend/library`  | Persisted originals for the "save-first" media library      |
+| `backend/data`     | SQLite database (`converter.db`) when using the default DB   |
+
+### Key flows
+
+1. **Convert** — `POST /api/upload-multiple` writes to `uploads/`, runs the thread-pool conversion to `outputs/`, records an activity row, cleans up the upload, returns task results. Download via `/api/download/{task_id}/{filename}`.
+2. **Batch** — `POST /api/upload-batch` returns a `batch_id` and converts in the background, then zips. Poll `GET /api/batch/{id}`; fetch `GET /api/batch/{id}/zip` when complete.
+3. **Save-first library** — `POST /api/media/save` stores originals in `library/` without converting; `POST /api/media/{task_id}/convert` converts a saved original later and attaches outputs to the same item.
+4. **Organize** — projects/folders/tags are session-scoped; media items are enriched with project/folder membership, notes, and tags.
+5. **AI explain** — `POST /api/ai/explain` loads a converted output, sends it to Claude with a prompt/template, and stores the explanation. Requires `ANTHROPIC_API_KEY` (see Configuration).
+6. **Session & cleanup** — every request upserts the session and logs an event; `GET /api/session/stats` and `/api/observability/summary` drive the dashboard; `DELETE /api/session/data` cascades across all tables and removes the associated files.
+
+### Frontend ↔ backend wiring
+
+- **Dev:** Vite (`:5173`) serves the UI and proxies `/api` → Uvicorn (`:8000`).
+- **Local one-app prod:** FastAPI serves `frontend/dist` and `/api` from one port — see [Run locally as one app](#run-locally-as-one-app-custom-hostname-single-port-auto-start).
+- The client uses a relative `/api` base unless `VITE_API_BASE_URL` is set (used for split deployments like Vercel + a separate API host).
+
 ## Run everything (backend + frontend)
 
 **One-time setup:**
