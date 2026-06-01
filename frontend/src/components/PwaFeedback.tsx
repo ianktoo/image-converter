@@ -3,10 +3,10 @@ import { registerSW } from "virtual:pwa-register";
 import { Button } from "@/components/ui/button";
 
 /**
- * Registers the PWA service worker and shows user feedback per PWA best practices
- * (e.g. https://create-react-app.dev/docs/making-a-progressive-web-app/):
- * - "This web app works offline!" when caches are ready
- * - "New content is available" when an update is waiting (if using prompt reload)
+ * Registers the PWA service worker in production builds and shows user feedback
+ * when an update is ready. In dev we deliberately do NOT register a service
+ * worker — and we proactively unregister any service worker that a previous
+ * session installed, otherwise it keeps serving stale bundles to the browser.
  */
 export function PwaFeedback() {
   const [offlineReady, setOfflineReady] = useState(false);
@@ -14,6 +14,20 @@ export function PwaFeedback() {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
+    if (import.meta.env.DEV) {
+      // Unregister any previously-installed SW from past runs and clear
+      // its caches, so we never see stale assets while developing.
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker
+          .getRegistrations()
+          .then((regs) => regs.forEach((r) => r.unregister()))
+          .catch(() => {});
+      }
+      if ("caches" in window) {
+        caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
+      }
+      return;
+    }
     registerSW({
       immediate: true,
       onOfflineReady() {
@@ -35,14 +49,14 @@ export function PwaFeedback() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 left-4 right-4 z-50 rounded-lg border border-slate-600 bg-slate-900/95 p-4 text-slate-200 shadow-lg sm:left-auto sm:right-4 sm:max-w-sm"
+      className="fixed bottom-4 left-4 right-4 z-50 rounded-lg border bg-card p-4 text-card-foreground shadow-lg sm:left-auto sm:right-4 sm:max-w-sm"
     >
       <div className="flex items-start gap-3">
-        <div className="flex-1 min-w-0">
-          <p className="font-medium text-slate-100">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">
             {needRefresh ? "New content available" : "Ready for offline use"}
           </p>
-          <p className="mt-1 text-sm">
+          <p className="mt-1 text-sm text-muted-foreground">
             {needRefresh
               ? "Reload the page to get the latest version."
               : "This web app works offline."}
@@ -50,11 +64,7 @@ export function PwaFeedback() {
         </div>
         <div className="flex shrink-0 gap-2">
           {needRefresh && (
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => window.location.reload()}
-            >
+            <Button type="button" size="sm" onClick={() => window.location.reload()}>
               Reload
             </Button>
           )}
@@ -62,7 +72,6 @@ export function PwaFeedback() {
             type="button"
             variant="ghost"
             size="sm"
-            className="text-slate-400 hover:bg-slate-800 hover:text-slate-200"
             onClick={() => setDismissed(true)}
             aria-label="Dismiss"
           >

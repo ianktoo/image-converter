@@ -6,15 +6,22 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +71,28 @@ type OutputOptionsCardProps = {
   onZipFolderStructureChange: (v: "flat" | "by_file" | "by_format") => void;
   onConvert: () => void;
 };
+
+function CheckboxRow({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 rounded border-input bg-background accent-primary"
+      />
+      <span className="text-sm">{label}</span>
+    </label>
+  );
+}
 
 export function OutputOptionsCard({
   mediaMode,
@@ -117,11 +146,11 @@ export function OutputOptionsCard({
       <Card>
         <CardHeader>
           <CardTitle>{isPictures ? "Image options" : "Video options"}</CardTitle>
-          <p className="text-sm font-normal text-neutral-500">
+          <CardDescription>
             {isPictures
               ? "Pick output formats and sizes. Use the size reduction slider and web optimization to balance quality and file size."
               : "Pick output format. Use web optimization to reduce file size."}
-          </p>
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Accordion defaultValue={["formats", "resize", "quality"]}>
@@ -129,8 +158,8 @@ export function OutputOptionsCard({
               <AccordionTrigger value="formats">Formats &amp; sizes</AccordionTrigger>
               <AccordionContent value="formats" className="space-y-4">
                 <section className="space-y-2">
-                  <Label className="text-neutral-400">Output format{isPictures ? "s" : ""}</Label>
-                  <p className="text-xs text-neutral-500">
+                  <Label>Output format{isPictures ? "s" : ""}</Label>
+                  <p className="text-xs text-muted-foreground">
                     {isPictures ? "Select at least one. Each format is generated for every selected size." : "Select at least one output format."}
                   </p>
                   {formatsLoading ? (
@@ -149,8 +178,8 @@ export function OutputOptionsCard({
                           className={cn(
                             "rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors",
                             outputFormats.includes(fmt)
-                              ? "border-neutral-500 bg-neutral-700 text-neutral-100"
-                              : "border-neutral-700 bg-neutral-800/50 text-neutral-400 hover:border-neutral-600 hover:text-neutral-300"
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "bg-background text-muted-foreground hover:border-accent-foreground/30 hover:text-foreground",
                           )}
                         >
                           {fmt.toUpperCase()}
@@ -162,8 +191,8 @@ export function OutputOptionsCard({
                 {isPictures && (
                   <>
                     <section className="space-y-2">
-                      <Label className="text-neutral-400">Output sizes</Label>
-                      <p className="text-xs text-neutral-500">Optional. Add presets (e.g. Instagram, Facebook) to get multiple dimensions per file. &quot;Original&quot; keeps the source size.</p>
+                      <Label>Output sizes</Label>
+                      <p className="text-xs text-muted-foreground">Optional. Add presets (e.g. Instagram, Facebook) to get multiple dimensions per file. &quot;Original&quot; keeps the source size.</p>
                       {!presets ? (
                         <Skeleton className="h-10 w-48" />
                       ) : (
@@ -177,13 +206,13 @@ export function OutputOptionsCard({
                           >
                             Choose sizes
                             {sizePresets.length > 0 && (
-                              <span className="rounded-full bg-neutral-700 px-2 py-0.5 text-xs">
+                              <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
                                 {sizePresets.length} selected
                               </span>
                             )}
                           </Button>
                           {sizePresets.length > 0 && (
-                            <span className="text-xs text-neutral-500">
+                            <span className="text-xs text-muted-foreground">
                               {sizePresets.map((k) => k.replace(/_/g, " ")).join(", ")}
                             </span>
                           )}
@@ -191,41 +220,35 @@ export function OutputOptionsCard({
                       )}
                     </section>
                     <section className="space-y-2">
-                      <Label className="text-neutral-400">Target width or height</Label>
-                      <p className="text-xs text-neutral-500">Optional. Set width and/or height. With &quot;Maintain aspect ratio&quot;, only one dimension is applied and the other is computed.</p>
+                      <Label>Target width or height</Label>
+                      <p className="text-xs text-muted-foreground">Optional. Set width and/or height. With &quot;Maintain aspect ratio&quot;, only one dimension is applied and the other is computed.</p>
                       <div className="flex flex-wrap items-center gap-3">
                         <div className="flex items-center gap-2">
-                          <input
+                          <Input
                             type="number"
                             min={1}
                             max={4096}
                             placeholder="Width"
                             value={targetWidth}
                             onChange={(e) => onTargetWidthChange(e.target.value)}
-                            className="w-24 rounded border border-neutral-600 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-500"
+                            className="w-24"
                           />
-                          <span className="text-xs text-neutral-500">×</span>
+                          <span className="text-xs text-muted-foreground">×</span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            min={1}
-                            max={4096}
-                            placeholder="Height"
-                            value={targetHeight}
-                            onChange={(e) => onTargetHeightChange(e.target.value)}
-                            className="w-24 rounded border border-neutral-600 bg-neutral-800 px-3 py-2 text-sm text-neutral-200 placeholder:text-neutral-500"
-                          />
-                        </div>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={maintainAspectRatio}
-                            onChange={(e) => onMaintainAspectRatioChange(e.target.checked)}
-                            className="h-4 w-4 rounded border-neutral-600 bg-neutral-800 accent-neutral-100"
-                          />
-                          <span className="text-sm text-neutral-300">Maintain aspect ratio</span>
-                        </label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={4096}
+                          placeholder="Height"
+                          value={targetHeight}
+                          onChange={(e) => onTargetHeightChange(e.target.value)}
+                          className="w-24"
+                        />
+                        <CheckboxRow
+                          checked={maintainAspectRatio}
+                          onChange={onMaintainAspectRatioChange}
+                          label="Maintain aspect ratio"
+                        />
                       </div>
                     </section>
                   </>
@@ -238,34 +261,38 @@ export function OutputOptionsCard({
               <AccordionContent value="resize" className="space-y-4">
                 {isPictures && (
                   <section className="space-y-2">
-                    <Label className="text-neutral-400">Resize behavior</Label>
-                    <p className="text-xs text-neutral-500">When using size presets: <strong className="text-neutral-400">Crop</strong> = center-crop to fit; <strong className="text-neutral-400">Fill with color/blur</strong> = letterbox with a background.</p>
+                    <Label>Resize behavior</Label>
+                    <p className="text-xs text-muted-foreground">When using size presets: <strong className="text-foreground">Crop</strong> = center-crop to fit; <strong className="text-foreground">Fill with color/blur</strong> = letterbox with a background.</p>
                     <div className="flex flex-wrap items-center gap-3">
-                      <select
+                      <Select
                         value={fillMode}
-                        onChange={(e) => onFillModeChange(e.target.value as "crop" | "color" | "blur")}
-                        className="rounded-lg border border-neutral-600 bg-neutral-800 px-3 py-2 text-sm text-neutral-100"
+                        onValueChange={(v) => onFillModeChange(v as "crop" | "color" | "blur")}
                       >
-                        <option value="crop">Crop (center)</option>
-                        <option value="color">Fill with color</option>
-                        <option value="blur">Fill with blur</option>
-                      </select>
+                        <SelectTrigger className="w-[200px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="crop">Crop (center)</SelectItem>
+                          <SelectItem value="color">Fill with color</SelectItem>
+                          <SelectItem value="blur">Fill with blur</SelectItem>
+                        </SelectContent>
+                      </Select>
                       {fillMode === "color" && (
                         <div className="flex items-center gap-2">
                           <input
                             type="color"
                             value={fillColor}
                             onChange={(e) => onFillColorChange(e.target.value)}
-                            className="h-9 w-12 cursor-pointer rounded border border-neutral-600"
+                            className="h-9 w-12 cursor-pointer rounded border border-input bg-background"
                           />
-                          <span className="text-xs text-neutral-500">{fillColor}</span>
+                          <span className="text-xs text-muted-foreground">{fillColor}</span>
                         </div>
                       )}
                     </div>
                   </section>
                 )}
                 <section className="space-y-2">
-                  <Label className="text-neutral-400">Target size reduction</Label>
+                  <Label>Target size reduction</Label>
                   <div className="flex items-center gap-3">
                     <input
                       type="range"
@@ -273,13 +300,13 @@ export function OutputOptionsCard({
                       max={80}
                       value={sizeReductionPercent}
                       onChange={(e) => onSizeReductionChange(Number(e.target.value))}
-                      className="h-2 w-40 flex-1 max-w-xs accent-neutral-400"
+                      className="h-2 w-40 max-w-xs flex-1 accent-primary"
                     />
-                    <span className="text-sm tabular-nums text-neutral-400 w-10">
+                    <span className="w-10 text-sm tabular-nums text-muted-foreground">
                       {sizeReductionPercent}%
                     </span>
                   </div>
-                  <p className="text-xs text-neutral-500">{isPictures ? "Lower quality for smaller files (0 = keep quality)" : "Lower bitrate for smaller files"}</p>
+                  <p className="text-xs text-muted-foreground">{isPictures ? "Lower quality for smaller files (0 = keep quality)" : "Lower bitrate for smaller files"}</p>
                 </section>
               </AccordionContent>
             </AccordionItem>
@@ -288,71 +315,35 @@ export function OutputOptionsCard({
               <AccordionTrigger value="advanced">Advanced</AccordionTrigger>
               <AccordionContent value="advanced" className="space-y-4">
                 <section className="space-y-2">
-                  <Label className="text-neutral-400">Web optimization</Label>
+                  <Label>Web optimization</Label>
                   <div className="flex flex-wrap gap-x-6 gap-y-2">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={webOptimized}
-                        onChange={(e) => onWebOptimizedChange(e.target.checked)}
-                        className="h-4 w-4 rounded border-neutral-600 bg-neutral-800 accent-neutral-100"
-                      />
-                      <span className="text-sm text-neutral-300">Web-optimized</span>
-                    </label>
+                    <CheckboxRow checked={webOptimized} onChange={onWebOptimizedChange} label="Web-optimized" />
                     {isPictures && (
                       <>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={stripMetadata}
-                            onChange={(e) => onStripMetadataChange(e.target.checked)}
-                            className="h-4 w-4 rounded border-neutral-600 bg-neutral-800 accent-neutral-100"
-                          />
-                          <span className="text-sm text-neutral-300">Strip metadata</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={progressive}
-                            onChange={(e) => onProgressiveChange(e.target.checked)}
-                            className="h-4 w-4 rounded border-neutral-600 bg-neutral-800 accent-neutral-100"
-                          />
-                          <span className="text-sm text-neutral-300">Progressive (JPEG)</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={aggressiveCompression}
-                            onChange={(e) => onAggressiveCompressionChange(e.target.checked)}
-                            className="h-4 w-4 rounded border-neutral-600 bg-neutral-800 accent-neutral-100"
-                          />
-                          <span className="text-sm text-neutral-300">Aggressive compression</span>
-                        </label>
+                        <CheckboxRow checked={stripMetadata} onChange={onStripMetadataChange} label="Strip metadata" />
+                        <CheckboxRow checked={progressive} onChange={onProgressiveChange} label="Progressive (JPEG)" />
+                        <CheckboxRow checked={aggressiveCompression} onChange={onAggressiveCompressionChange} label="Aggressive compression" />
                       </>
                     )}
                     {multipleFiles && (
                       <>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={zipWhenDone}
-                            onChange={(e) => onZipWhenDoneChange(e.target.checked)}
-                            className="h-4 w-4 rounded border-neutral-600 bg-neutral-800 accent-neutral-100"
-                          />
-                          <span className="text-sm text-neutral-300">Zip when done</span>
-                        </label>
+                        <CheckboxRow checked={zipWhenDone} onChange={onZipWhenDoneChange} label="Zip when done" />
                         {zipWhenDone && (
                           <div className="flex items-center gap-2">
-                            <Label className="text-xs text-neutral-500 shrink-0">ZIP folders:</Label>
-                            <select
+                            <Label className="shrink-0 text-xs text-muted-foreground">ZIP folders:</Label>
+                            <Select
                               value={zipFolderStructure}
-                              onChange={(e) => onZipFolderStructureChange(e.target.value as "flat" | "by_file" | "by_format")}
-                              className="rounded border border-neutral-600 bg-neutral-800 px-2 py-1 text-xs text-neutral-200"
+                              onValueChange={(v) => onZipFolderStructureChange(v as "flat" | "by_file" | "by_format")}
                             >
-                              <option value="flat">Flat (all in root)</option>
-                              <option value="by_file">By original file</option>
-                              <option value="by_format">By format (webp/, jpeg/)</option>
-                            </select>
+                              <SelectTrigger className="h-8 w-[220px] text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="flat">Flat (all in root)</SelectItem>
+                                <SelectItem value="by_file">By original file</SelectItem>
+                                <SelectItem value="by_format">By format (webp/, jpeg/)</SelectItem>
+                              </SelectContent>
+                            </Select>
                           </div>
                         )}
                       </>
@@ -373,13 +364,11 @@ export function OutputOptionsCard({
         </CardContent>
       </Card>
 
-      {/* Sizes modal */}
       <Dialog open={sizesModalOpen} onOpenChange={setSizesModalOpen}>
-        <DialogHeader>
-          <DialogTitle>Output sizes</DialogTitle>
-          <DialogClose onClose={() => setSizesModalOpen(false)} />
-        </DialogHeader>
-        <DialogContent>
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Output sizes</DialogTitle>
+          </DialogHeader>
           {!presets ? (
             <div className="grid grid-cols-2 gap-2">
               {[...Array(8)].map((_, i) => (
@@ -400,18 +389,18 @@ export function OutputOptionsCard({
                     className={cn(
                       "flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors",
                       sizePresets.includes(key)
-                        ? "border-neutral-500 bg-neutral-800"
-                        : "border-neutral-700 bg-neutral-800/50 hover:border-neutral-600"
+                        ? "border-primary bg-accent"
+                        : "hover:border-accent-foreground/30 hover:bg-accent/50",
                     )}
                   >
                     <input
                       type="checkbox"
                       checked={sizePresets.includes(key)}
                       onChange={() => onToggleSizePreset(key)}
-                      className="h-4 w-4 shrink-0 rounded border-neutral-600 bg-neutral-800 accent-neutral-100"
+                      className="h-4 w-4 shrink-0 rounded border-input bg-background accent-primary"
                     />
                     <div
-                      className="shrink-0 rounded border border-neutral-600 bg-neutral-700/80"
+                      className="shrink-0 rounded border bg-muted"
                       style={{
                         width: Math.round(width),
                         height: Math.round(height),
@@ -421,10 +410,10 @@ export function OutputOptionsCard({
                       title={dims ? `${dims[0]} × ${dims[1]}` : "Original"}
                     />
                     <div className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium capitalize text-neutral-200">
+                      <span className="block truncate text-sm font-medium capitalize">
                         {key.replace(/_/g, " ")}
                       </span>
-                      <span className="text-xs text-neutral-500">
+                      <span className="text-xs text-muted-foreground">
                         {dims ? `${dims[0]} × ${dims[1]}` : "Original dimensions"}
                       </span>
                     </div>
@@ -433,7 +422,7 @@ export function OutputOptionsCard({
               })}
             </div>
           )}
-          <div className="mt-4 flex justify-end border-t border-neutral-800 pt-4">
+          <div className="mt-4 flex justify-end border-t pt-4">
             <Button type="button" variant="secondary" onClick={() => setSizesModalOpen(false)}>
               Done
             </Button>

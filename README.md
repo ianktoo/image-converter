@@ -30,6 +30,21 @@ To run only one:
 - Backend: `npm run dev:backend`
 - Frontend: `npm run dev:frontend`
 
+## Run with Docker
+
+Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+
+```bash
+docker compose up --build
+```
+
+This starts both services with live reload:
+
+- Frontend: http://localhost:9000 (Vite dev server)
+- Backend: http://localhost:9090 (FastAPI + ffmpeg baked into the image)
+
+Uploads, outputs, zips and the SQLite database persist in named Docker volumes (`backend-uploads`, `backend-outputs`, `backend-zips`, `backend-data`). To wipe them: `docker compose down -v`.
+
 ## Configuration (env files)
 
 Optional: use `.env` to override defaults.

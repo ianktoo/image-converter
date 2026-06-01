@@ -5,9 +5,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.ai import ensure_ai_tables
+from app.api.ai import router as ai_router
+from app.api.organize import router as organize_router
 from app.api.routes import router
 from app.config import CORS_ORIGINS, logger as config_logger
 from app.db import init_db
+from app.organize import ensure_organize_tables
 
 logging.getLogger("uvicorn").setLevel(logging.INFO)
 
@@ -15,6 +19,8 @@ logging.getLogger("uvicorn").setLevel(logging.INFO)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    ensure_organize_tables()
+    ensure_ai_tables()
     config_logger.info("Converter API started")
     yield
     config_logger.info("Converter API shutting down")
@@ -45,6 +51,8 @@ async def session_header_middleware(request, call_next):
 
 app.middleware("http")(session_header_middleware)
 app.include_router(router)
+app.include_router(organize_router)
+app.include_router(ai_router)
 
 
 if __name__ == "__main__":

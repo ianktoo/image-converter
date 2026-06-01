@@ -31,6 +31,15 @@ export function formatDate(ms: number): string {
   });
 }
 
+/** Strip a leading "<uuid>_" prefix that the backend prepends to stored filenames. */
+export function cleanFilename(name: string | null | undefined): string {
+  if (!name) return "";
+  return name.replace(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i,
+    "",
+  );
+}
+
 /** Format duration in seconds (e.g. "2 min 30 sec" or "45 sec"). */
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";

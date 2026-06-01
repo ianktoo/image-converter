@@ -17,7 +17,7 @@ logger = logging.getLogger("converter.db")
 _engine: Optional[Engine] = None
 
 # Tables required for the app (created at startup if missing)
-REQUIRED_TABLES = ("batches", "session_activities")
+REQUIRED_TABLES = ("batches", "session_activities", "sessions", "events")
 
 
 def _is_sqlite() -> bool:
@@ -76,6 +76,27 @@ def _create_sqlite_tables(conn) -> None:
             duration_seconds REAL
         )
     """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            user_agent TEXT,
+            event_count INTEGER NOT NULL DEFAULT 0
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            target_id TEXT,
+            detail TEXT,
+            created_at TEXT NOT NULL
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)"))
     _add_session_id_column_sqlite(conn)
     conn.commit()
 
@@ -114,6 +135,27 @@ def _create_mysql_tables(conn) -> None:
             created_at VARCHAR(50) NOT NULL,
             completed_at VARCHAR(50),
             duration_seconds DOUBLE
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id VARCHAR(255) PRIMARY KEY,
+            created_at VARCHAR(50) NOT NULL,
+            last_seen_at VARCHAR(50) NOT NULL,
+            user_agent VARCHAR(512),
+            event_count INT NOT NULL DEFAULT 0
+        )
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            session_id VARCHAR(255) NOT NULL,
+            type VARCHAR(64) NOT NULL,
+            target_id VARCHAR(255),
+            detail TEXT,
+            created_at VARCHAR(50) NOT NULL,
+            INDEX idx_events_session (session_id),
+            INDEX idx_events_type (type)
         )
     """))
     _add_session_id_column_mysql(conn)
@@ -156,6 +198,27 @@ def _create_sqlserver_tables(conn) -> None:
             created_at DATETIME2 NOT NULL,
             completed_at DATETIME(2),
             duration_seconds FLOAT
+        )
+    """))
+    conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'sessions')
+        CREATE TABLE sessions (
+            session_id NVARCHAR(255) PRIMARY KEY,
+            created_at DATETIME2 NOT NULL,
+            last_seen_at DATETIME2 NOT NULL,
+            user_agent NVARCHAR(512),
+            event_count INT NOT NULL DEFAULT 0
+        )
+    """))
+    conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'events')
+        CREATE TABLE events (
+            id BIGINT IDENTITY(1,1) PRIMARY KEY,
+            session_id NVARCHAR(255) NOT NULL,
+            type NVARCHAR(64) NOT NULL,
+            target_id NVARCHAR(255),
+            detail NVARCHAR(MAX),
+            created_at DATETIME2 NOT NULL
         )
     """))
     conn.commit()
@@ -326,6 +389,10 @@ def record_activity(
     output_bytes: Optional[int] = None,
     output_count: int = 0,
     duration_seconds: Optional[float] = None,
+    kind: Optional[str] = None,
+    mime_type: Optional[str] = None,
+    output_paths: Optional[list[str]] = None,
+    source_path: Optional[str] = None,
 ) -> None:
     now = _now_iso()
     params = {
@@ -340,24 +407,151 @@ def record_activity(
         "created_at": now,
         "completed_at": now,
         "duration_seconds": duration_seconds,
+        "kind": kind,
+        "mime_type": mime_type,
+        "output_paths_json": json.dumps(output_paths) if output_paths else None,
+        "source_path": source_path,
     }
+    insert_sql = """
+        INSERT INTO session_activities (session_id, task_id, batch_id, filename, input_bytes, output_bytes, output_count, status, created_at, completed_at, duration_seconds, kind, mime_type, output_paths_json, source_path)
+        VALUES (:session_id, :task_id, :batch_id, :filename, :input_bytes, :output_bytes, :output_count, :status, :created_at, :completed_at, :duration_seconds, :kind, :mime_type, :output_paths_json, :source_path)
+    """
+    with session() as conn:
+        conn.execute(text(insert_sql), params)
+
+
+def update_activity_outputs(
+    session_id: str,
+    task_id: str,
+    *,
+    status: str,
+    output_bytes: Optional[int] = None,
+    output_count: int = 0,
+    output_paths: Optional[list[str]] = None,
+    duration_seconds: Optional[float] = None,
+) -> None:
+    """Update an existing media row with conversion results (used by convert-from-library)."""
+    params = {
+        "session_id": session_id,
+        "task_id": task_id,
+        "status": status,
+        "output_bytes": output_bytes,
+        "output_count": output_count,
+        "output_paths_json": json.dumps(output_paths) if output_paths else None,
+        "duration_seconds": duration_seconds,
+        "completed_at": _now_iso(),
+    }
+    sql = """
+        UPDATE session_activities
+        SET status = :status, output_bytes = :output_bytes, output_count = :output_count,
+            output_paths_json = :output_paths_json, duration_seconds = :duration_seconds,
+            completed_at = :completed_at
+        WHERE task_id = :task_id AND session_id = :session_id
+    """
+    with session() as conn:
+        conn.execute(text(sql), params)
+
+
+# -------- session tracking + observability --------
+
+def touch_session(session_id: str, user_agent: Optional[str] = None) -> None:
+    """Record/refresh a session. Idempotent upsert keyed on session_id."""
+    now = _now_iso()
+    ua = (user_agent or "")[:500] or None
     with session() as conn:
         if _is_sqlite():
             conn.execute(
                 text("""
-                    INSERT INTO session_activities (session_id, task_id, batch_id, filename, input_bytes, output_bytes, output_count, status, created_at, completed_at, duration_seconds)
-                    VALUES (:session_id, :task_id, :batch_id, :filename, :input_bytes, :output_bytes, :output_count, :status, :created_at, :completed_at, :duration_seconds)
+                    INSERT INTO sessions (session_id, created_at, last_seen_at, user_agent, event_count)
+                    VALUES (:sid, :now, :now, :ua, 0)
+                    ON CONFLICT(session_id) DO UPDATE SET last_seen_at = :now,
+                        user_agent = COALESCE(:ua, sessions.user_agent)
                 """),
-                params,
+                {"sid": session_id, "now": now, "ua": ua},
+            )
+        elif _is_mysql():
+            conn.execute(
+                text("""
+                    INSERT INTO sessions (session_id, created_at, last_seen_at, user_agent, event_count)
+                    VALUES (:sid, :now, :now, :ua, 0)
+                    ON DUPLICATE KEY UPDATE last_seen_at = :now, user_agent = COALESCE(:ua, user_agent)
+                """),
+                {"sid": session_id, "now": now, "ua": ua},
             )
         else:
             conn.execute(
                 text("""
-                    INSERT INTO session_activities (session_id, task_id, batch_id, filename, input_bytes, output_bytes, output_count, status, created_at, completed_at, duration_seconds)
-                    VALUES (:session_id, :task_id, :batch_id, :filename, :input_bytes, :output_bytes, :output_count, :status, :created_at, :completed_at, :duration_seconds)
+                    MERGE sessions AS t USING (SELECT :sid AS sid) AS s ON t.session_id = s.sid
+                    WHEN MATCHED THEN UPDATE SET last_seen_at = :now, user_agent = COALESCE(:ua, t.user_agent)
+                    WHEN NOT MATCHED THEN INSERT (session_id, created_at, last_seen_at, user_agent, event_count)
+                    VALUES (:sid, :now, :now, :ua, 0)
                 """),
-                params,
+                {"sid": session_id, "now": now, "ua": ua},
             )
+
+
+def record_event(
+    session_id: str,
+    event_type: str,
+    *,
+    target_id: Optional[str] = None,
+    detail: Optional[dict] = None,
+) -> None:
+    """Append an observability event. Never raises (best-effort)."""
+    try:
+        with session() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO events (session_id, type, target_id, detail, created_at)
+                    VALUES (:sid, :type, :target, :detail, :now)
+                """),
+                {
+                    "sid": session_id,
+                    "type": event_type,
+                    "target": target_id,
+                    "detail": json.dumps(detail) if detail else None,
+                    "now": _now_iso(),
+                },
+            )
+            conn.execute(
+                text("UPDATE sessions SET event_count = event_count + 1 WHERE session_id = :sid"),
+                {"sid": session_id},
+            )
+    except Exception as e:
+        logger.warning("record_event failed (%s): %s", event_type, e)
+
+
+def get_observability_summary() -> dict:
+    """Cross-session observability snapshot for the dashboard strip."""
+    with get_engine().connect() as conn:
+        sessions_total = conn.execute(text("SELECT COUNT(*) FROM sessions")).scalar() or 0
+        events_total = conn.execute(text("SELECT COUNT(*) FROM events")).scalar() or 0
+        media_total = conn.execute(text("SELECT COUNT(*) FROM session_activities")).scalar() or 0
+        conversions = conn.execute(
+            text("SELECT COALESCE(SUM(output_count), 0) FROM session_activities")
+        ).scalar() or 0
+        bytes_in = conn.execute(
+            text("SELECT COALESCE(SUM(input_bytes), 0) FROM session_activities")
+        ).scalar() or 0
+        bytes_out = conn.execute(
+            text("SELECT COALESCE(SUM(output_bytes), 0) FROM session_activities")
+        ).scalar() or 0
+        failed = conn.execute(
+            text("SELECT COUNT(*) FROM session_activities WHERE status = 'failed'")
+        ).scalar() or 0
+        by_type_rows = conn.execute(
+            text("SELECT type, COUNT(*) FROM events GROUP BY type ORDER BY COUNT(*) DESC")
+        ).fetchall()
+    return {
+        "sessions_total": int(sessions_total),
+        "events_total": int(events_total),
+        "media_total": int(media_total),
+        "conversions_total": int(conversions),
+        "failed_total": int(failed),
+        "total_input_bytes": int(bytes_in),
+        "total_output_bytes": int(bytes_out),
+        "events_by_type": {r[0]: int(r[1]) for r in by_type_rows},
+    }
 
 
 def get_session_stats(session_id: str) -> dict:
@@ -431,19 +625,49 @@ def get_session_activities(session_id: str, limit: int = 100) -> list[dict]:
 
 def delete_session_data(session_id: str) -> tuple[list[str], list[tuple[str, Optional[str]]]]:
     """
-    Delete all session_activities and batches for the session.
+    Delete all session_activities, batches, and organize-scoped data for the session.
     Returns (task_ids, [(batch_id, zip_filename), ...]) so caller can delete output files and zip files.
     """
     task_ids: list[str] = []
     batch_zips: list[tuple[str, Optional[str]]] = []
+    source_paths: list[str] = []
     with get_engine().connect() as conn:
         rows = conn.execute(text("SELECT task_id FROM session_activities WHERE session_id = :sid"), {"sid": session_id}).fetchall()
         task_ids = [r[0] for r in rows]
+        try:
+            src_rows = conn.execute(
+                text("SELECT source_path FROM session_activities WHERE session_id = :sid AND source_path IS NOT NULL"),
+                {"sid": session_id},
+            ).fetchall()
+            source_paths = [r[0] for r in src_rows if r[0]]
+        except Exception:
+            source_paths = []
         rows = conn.execute(text("SELECT batch_id, zip_filename FROM batches WHERE session_id = :sid"), {"sid": session_id}).fetchall()
         batch_zips = [(r[0], r[1]) for r in rows]
         conn.execute(text("DELETE FROM session_activities WHERE session_id = :sid"), {"sid": session_id})
         conn.execute(text("DELETE FROM batches WHERE session_id = :sid"), {"sid": session_id})
+        conn.execute(text("DELETE FROM events WHERE session_id = :sid"), {"sid": session_id})
+        conn.execute(text("DELETE FROM sessions WHERE session_id = :sid"), {"sid": session_id})
         conn.commit()
+    # Delete persisted original files for this session's library items.
+    for sp in source_paths:
+        try:
+            p = app_config.LIBRARY_DIR / sp
+            if p.is_file():
+                p.unlink()
+        except OSError as e:
+            logger.warning("Could not delete library source %s: %s", sp, e)
+    # Cascade to organize + AI tables. Imported lazily to avoid circular imports at module load.
+    try:
+        from app.organize.db import delete_organize_session_data  # noqa: WPS433
+        delete_organize_session_data(session_id)
+    except Exception as e:
+        logger.warning("Failed to clear organize data for session %s: %s", session_id, e)
+    try:
+        from app.ai.db import delete_ai_session_data  # noqa: WPS433
+        delete_ai_session_data(session_id)
+    except Exception as e:
+        logger.warning("Failed to clear AI data for session %s: %s", session_id, e)
     return task_ids, batch_zips
 
 
