@@ -221,6 +221,10 @@ def list_media(
         q=q,
         limit=limit,
     )
+    # Attach tags in one batched query so cards can show chips / quick-tag state.
+    tags_by_task = orga.get_tags_for_tasks(session_id, [it["task_id"] for it in items])
+    for it in items:
+        it["tags"] = tags_by_task.get(it["task_id"], [])
     return {"items": items}
 
 

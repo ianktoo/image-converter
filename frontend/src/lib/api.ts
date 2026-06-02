@@ -552,6 +552,41 @@ export async function deleteMedia(taskId: string): Promise<void> {
   if (!r.ok) await throwApiError(r);
 }
 
+/** Scope for a bulk library conversion: explicit items, or a whole project/folder. */
+export type LibraryConvertScope =
+  | { task_ids: string[] }
+  | { project_id: string }
+  | { folder_id: string };
+
+/**
+ * Convert every saved original in a scope in the background (outputs attach back to each
+ * library item) and build one ZIP. Returns a batch_id — poll getBatchStatus and download
+ * via batchZipUrl, same as the upload batch flow.
+ */
+export async function libraryConvert(
+  scope: LibraryConvertScope,
+  formats: string[],
+  options?: UploadOptions & { webOptimized?: boolean; zipFolderStructure?: ZipFolderStructure },
+): Promise<{ batch_id: string; status: string; count: number }> {
+  const params = new URLSearchParams();
+  params.set("formats", formats.join(","));
+  if (options?.webOptimized) params.set("web_optimized", "true");
+  if (options?.sizes?.length) params.set("sizes", options.sizes.join(","));
+  if (options?.fillMode) params.set("fill_mode", options.fillMode);
+  if (options?.fillColor) params.set("fill_color", options.fillColor);
+  if (options?.sizeReductionPercent != null) params.set("size_reduction_percent", String(options.sizeReductionPercent));
+  if (options?.stripMetadata) params.set("strip_metadata", "true");
+  if (options?.progressive) params.set("progressive", "true");
+  if (options?.aggressiveCompression) params.set("aggressive_compression", "true");
+  if (options?.zipFolderStructure) params.set("zip_folder_structure", options.zipFolderStructure);
+  const r = await apiFetch(`${API}/library/convert?${params}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(scope),
+  });
+  return jsonOrThrow<{ batch_id: string; status: string; count: number }>(r);
+}
+
 // --- observability ---
 
 export type ObservabilitySummary = {
