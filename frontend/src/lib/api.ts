@@ -1,6 +1,6 @@
 import { throwApiError } from "./apiErrors";
 import { env } from "./env";
-import { getSessionHeaders, setSessionId } from "./session";
+import { getSessionHeaders, getSessionId, setSessionId } from "./session";
 
 const API = env.apiBaseUrl ? `${env.apiBaseUrl.replace(/\/$/, "")}/api` : "/api";
 
@@ -497,14 +497,24 @@ export async function saveMedia(
   return data.items;
 }
 
+/**
+ * Append the session id as a `sid` query param. <img>/<a download> requests can't send
+ * the X-Session-ID header, so session-scoped media endpoints need it on the URL instead.
+ */
+function withSid(url: string): string {
+  const sid = getSessionId();
+  if (!sid) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}sid=${encodeURIComponent(sid)}`;
+}
+
 /** URL of the persisted original for a saved library item. */
 export function mediaSourceUrl(taskId: string): string {
-  return `${API}/media/${encodeURIComponent(taskId)}/source`;
+  return withSid(`${API}/media/${encodeURIComponent(taskId)}/source`);
 }
 
 /** URL of a converted output for a media item (served from the DB record, restart-safe). */
 export function mediaOutputUrl(taskId: string, filename: string): string {
-  return `${API}/media/${encodeURIComponent(taskId)}/output/${encodeURIComponent(filename)}`;
+  return withSid(`${API}/media/${encodeURIComponent(taskId)}/output/${encodeURIComponent(filename)}`);
 }
 
 /** Best thumbnail URL for a media item: a converted output if present, else the saved original. */

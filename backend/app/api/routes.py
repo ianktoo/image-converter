@@ -68,9 +68,13 @@ def _max_url_download_bytes_for_ext(ext: str) -> int:
 
 
 def get_or_create_session_id(request: Request) -> str:
-    """Use X-Session-ID header or generate and attach to request for response header.
+    """Resolve the session: X-Session-ID header first, then a ?sid= query param, else
+    generate one. The query fallback exists because plain <img>/<a download> requests
+    can't set headers — without it, session-scoped image endpoints 404 in the browser.
     Also records/refreshes the session for observability (best-effort)."""
     sid = (request.headers.get("X-Session-ID") or "").strip()
+    if not sid:
+        sid = (request.query_params.get("sid") or "").strip()
     if not sid:
         sid = str(uuid.uuid4())
         request.state.session_id = sid
