@@ -15,7 +15,7 @@ A session with a batch still processing is never swept and is refreshed when the
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Browser — React SPA (Vite, TypeScript, shadcn/ui, Tailwind, PWA)          │
-│  Views: Convert · Media · Projects · Tags · Gallery · AI Explain           │
+│  Views: Convert · Library (tree + media grid) · AI Explain                 │
 │  (view-context switches views; no router)                                  │
 │  lib/api.ts  →  sends X-Session-ID (stored in localStorage)                │
 └───────────────┬────────────────────────────────────────────────────────────┘
@@ -77,7 +77,7 @@ Local disk               SQL database  (SQLite default │ MySQL │ SQL Server)
 1. **Convert** — `POST /api/upload-multiple` writes to `uploads/`, runs the thread-pool conversion to `outputs/`, records an activity row, cleans up the upload, returns task results. Download via `/api/download/{task_id}/{filename}`.
 2. **Batch** — `POST /api/upload-batch` returns a `batch_id` and converts in the background, then zips. Poll `GET /api/batch/{id}`; fetch `GET /api/batch/{id}/zip` when complete.
 3. **Save-first library** — `POST /api/media/save` stores originals in `library/` without converting; `POST /api/media/{task_id}/convert` converts a saved original later and attaches outputs to the same item.
-4. **Organize** — projects/folders/tags are session-scoped; media items are enriched with project/folder membership, notes, and tags.
+4. **Library / organize** — one **Library** workspace (left tree: All media / Projects→Folders / Tags) where projects, folders, and tags are created inline at the point of use. Per-card quick actions (move/tag/convert/delete), multi-select bulk actions, and **Convert all** for a scope. `POST /api/library/convert` (scope = `task_ids | project_id | folder_id`) converts every saved original in the background, attaches outputs to each item in place, and bundles one ZIP (poll `/api/batch/{id}`, download `/api/batch/{id}/zip`).
 5. **AI explain** — `POST /api/ai/explain` loads a converted output, sends it to Claude with a prompt/template, and stores the explanation. Requires `ANTHROPIC_API_KEY` (see Configuration).
 6. **Session & cleanup** — every request upserts the session (sliding 1-hour TTL) and logs an event; `GET /api/session/stats` and `/api/observability/summary` drive the dashboard; `DELETE /api/session/data` purges all of the session's rows and files. A background sweeper (every `SESSION_SWEEP_INTERVAL_SECONDS`) auto-purges sessions idle past `SESSION_TTL_SECONDS`, skipping any with a batch still `processing` and refreshing a session's clock when its batch finishes.
 

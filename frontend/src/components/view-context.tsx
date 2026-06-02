@@ -1,6 +1,6 @@
 import { createContext, useContext, useState } from "react";
 
-export type ViewId = "convert" | "media" | "projects" | "tags" | "gallery" | "ai";
+export type ViewId = "convert" | "library" | "ai";
 
 type ViewContextValue = {
   view: ViewId;

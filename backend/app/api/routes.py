@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image
+from pydantic import BaseModel
 
 from app.batch import (
     create_batch,
@@ -68,9 +69,13 @@ def _max_url_download_bytes_for_ext(ext: str) -> int:
 
 
 def get_or_create_session_id(request: Request) -> str:
-    """Use X-Session-ID header or generate and attach to request for response header.
+    """Resolve the session: X-Session-ID header first, then a ?sid= query param, else
+    generate one. The query fallback exists because plain <img>/<a download> requests
+    can't set headers — without it, session-scoped image endpoints 404 in the browser.
     Also records/refreshes the session for observability (best-effort)."""
     sid = (request.headers.get("X-Session-ID") or "").strip()
+    if not sid:
+        sid = (request.query_params.get("sid") or "").strip()
     if not sid:
         sid = str(uuid.uuid4())
         request.state.session_id = sid
@@ -1032,6 +1037,173 @@ def media_convert(
     if updated:
         updated["tags"] = orga.get_tags_for_task(session_id, task_id)
     return updated or {}
+
+
+class LibraryConvertScope(BaseModel):
+    """What to convert: an explicit set of items, or everything in a project/folder."""
+    task_ids: Optional[list[str]] = None
+    project_id: Optional[str] = None
+    folder_id: Optional[str] = None
+
+
+def _run_library_convert(
+    batch_id: str,
+    items: list[tuple[str, str, Optional[str]]],  # (task_id, stored_source_name, filename)
+    output_formats: list[str],
+    web_optimized: bool,
+    size_list: list[str],
+    fill_mode: str,
+    fill_color: Optional[str],
+    size_reduction_percent: Optional[int],
+    strip_metadata: bool,
+    progressive: bool,
+    aggressive_compression: bool,
+    zip_folder_structure: str,
+    session_id: str,
+):
+    """Blocking: convert each saved library original IN PLACE (outputs attach back to the
+    same media item) then zip all outputs. Called in a thread.
+
+    Unlike _run_batch_and_zip, the source files are persistent library originals and must
+    NOT be deleted afterwards.
+    """
+    svc = get_conversion_service()
+    task_id_to_paths: list[tuple[str, list[str]]] = []
+    task_id_to_filename: dict[str, str] = {}
+    try:
+        for task_id, stored_name, filename in items:
+            source = LIBRARY_DIR / stored_name
+            if not source.is_file():
+                logger.warning("Library source missing for %s: %s", task_id, stored_name)
+                continue
+            try:
+                task = svc.convert(
+                    source,
+                    output_formats,
+                    web_optimized=web_optimized,
+                    size_presets=size_list or ["original"],
+                    fill_mode=fill_mode or "crop",
+                    fill_color=fill_color,
+                    size_reduction_percent=size_reduction_percent,
+                    strip_metadata=strip_metadata,
+                    progressive=progressive,
+                    aggressive_compression=aggressive_compression,
+                )
+            except Exception as e:
+                logger.exception("Library convert failed for %s: %s", task_id, e)
+                continue
+            output_names = [Path(p).name for p in task.output_paths]
+            out_bytes = sum(task.output_sizes) if getattr(task, "output_sizes", None) else None
+            update_activity_outputs(
+                session_id,
+                task_id,
+                status=task.status.value,
+                output_bytes=out_bytes,
+                output_count=len(output_names),
+                output_paths=output_names,
+            )
+            record_event(
+                session_id, "convert", target_id=task_id,
+                detail={"formats": output_formats, "from_library": True, "bulk": True, "status": task.status.value},
+            )
+            if output_names:
+                task_id_to_paths.append((task_id, output_names))
+                task_id_to_filename[task_id] = filename or task_id
+
+        if task_id_to_paths:
+            zip_name = create_zip_from_task_outputs(
+                batch_id,
+                task_id_to_paths,
+                folder_structure=zip_folder_structure or "flat",
+                task_id_to_filename=task_id_to_filename,
+            )
+            set_batch_completed(batch_id, zip_name, task_ids=[t[0] for t in task_id_to_paths])
+        else:
+            set_batch_failed(batch_id, "No outputs produced")
+    except Exception as e:
+        logger.exception("Library batch failed: %s", e)
+        set_batch_failed(batch_id, str(e))
+    finally:
+        # NOTE: deliberately do NOT delete the source files — they are the user's library.
+        if session_id:
+            try:
+                touch_session(session_id)
+            except Exception as e:
+                logger.debug("touch_session after library convert failed: %s", e)
+
+
+@router.post("/library/convert")
+def library_convert(
+    background_tasks: BackgroundTasks,
+    scope: LibraryConvertScope = Body(...),
+    formats: str = Query("webp", description="Comma-separated output formats"),
+    web_optimized: bool = Query(False),
+    sizes: str = Query("original"),
+    fill_mode: str = Query("crop"),
+    fill_color: str = Query(""),
+    size_reduction_percent: int = Query(0, ge=0, le=80),
+    strip_metadata: bool = Query(False),
+    progressive: bool = Query(False),
+    aggressive_compression: bool = Query(False),
+    zip_folder_structure: str = Query("flat", description="flat | by_file | by_format"),
+    session_id: str = Depends(get_or_create_session_id),
+):
+    """Convert every saved original in a scope (explicit task_ids, or a whole project/folder)
+    in the background, attach outputs back to each library item, and build one zip.
+    Returns a batch_id; poll /api/batch/{batch_id} and download /api/batch/{batch_id}/zip."""
+    # Resolve the scope to a concrete list of media items.
+    if scope.task_ids:
+        resolved = [orga.get_media(session_id, tid) for tid in scope.task_ids]
+        resolved = [m for m in resolved if m]
+    elif scope.folder_id:
+        resolved = orga.list_media(session_id, folder_id=scope.folder_id, limit=500)
+    elif scope.project_id:
+        resolved = orga.list_media(session_id, project_id=scope.project_id, limit=500)
+    else:
+        raise HTTPException(400, "Provide task_ids, project_id, or folder_id")
+
+    # Keep only items that have a saved original on disk.
+    items: list[tuple[str, str, Optional[str]]] = []
+    for m in resolved:
+        tid = m.get("task_id")
+        stored = orga.get_source_path(session_id, tid) if tid else None
+        if stored and (LIBRARY_DIR / stored).is_file():
+            items.append((tid, stored, m.get("filename")))
+    if not items:
+        raise HTTPException(400, "Nothing to convert: no saved originals in this scope")
+
+    output_formats = [f.strip().lower() for f in formats.split(",") if f.strip()] or ["webp"]
+    size_list = [s.strip() for s in sizes.split(",") if s.strip()] or ["original"]
+    fill_color_val = fill_color.strip() or None
+
+    batch_id = str(uuid.uuid4())
+    create_batch(batch_id, [], session_id=session_id)
+
+    async def run_library_async():
+        await asyncio.to_thread(
+            _run_library_convert,
+            batch_id,
+            items,
+            output_formats,
+            web_optimized,
+            size_list,
+            fill_mode or "crop",
+            fill_color_val,
+            size_reduction_percent or None,
+            strip_metadata,
+            progressive,
+            aggressive_compression,
+            zip_folder_structure or "flat",
+            session_id,
+        )
+
+    background_tasks.add_task(run_library_async)
+    return {
+        "batch_id": batch_id,
+        "status": "processing",
+        "count": len(items),
+        "message": "Conversion started. Poll /api/batch/{batch_id} for status.",
+    }
 
 
 @router.delete("/media/{task_id}")

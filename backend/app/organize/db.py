@@ -578,6 +578,35 @@ def get_tags_for_task(session_id: str, task_id: str) -> list[dict]:
     return [{"id": r[0], "name": r[1], "color": r[2], "created_at": r[3]} for r in rows]
 
 
+def get_tags_for_tasks(session_id: str, task_ids: list[str]) -> dict[str, list[dict]]:
+    """Batched version of get_tags_for_task: one query for many task_ids.
+    Returns {task_id: [tag, ...]} (only task_ids that have tags appear)."""
+    ids = [t for t in task_ids if t]
+    if not ids:
+        return {}
+    # Expanding IN clause with named params (portable across SQLite/MySQL/SQL Server).
+    placeholders = ", ".join(f":t{i}" for i in range(len(ids)))
+    params: dict = {"sid": session_id}
+    for i, tid in enumerate(ids):
+        params[f"t{i}"] = tid
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT mt.task_id, t.id, t.name, t.color, t.created_at FROM tags t "
+                "JOIN media_tags mt ON t.id = mt.tag_id "
+                f"WHERE mt.session_id = :sid AND mt.task_id IN ({placeholders}) "
+                "ORDER BY t.name ASC"
+            ),
+            params,
+        ).fetchall()
+    result: dict[str, list[dict]] = {}
+    for r in rows:
+        result.setdefault(r[0], []).append(
+            {"id": r[1], "name": r[2], "color": r[3], "created_at": r[4]}
+        )
+    return result
+
+
 # -------- media items (view over session_activities) --------
 
 def list_media(

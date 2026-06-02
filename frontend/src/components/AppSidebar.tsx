@@ -1,4 +1,4 @@
-import { ImageIcon, FolderIcon, TagIcon, GalleryHorizontalEnd, Sparkles, ArrowDownToLine } from "lucide-react";
+import { Library, Sparkles, ArrowDownToLine } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useView, type ViewId } from "@/components/view-context";
 
@@ -12,10 +12,7 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { id: "convert", label: "Convert", icon: ArrowDownToLine },
-  { id: "media", label: "Media", icon: ImageIcon },
-  { id: "projects", label: "Projects", icon: FolderIcon },
-  { id: "tags", label: "Tags", icon: TagIcon },
-  { id: "gallery", label: "Gallery", icon: GalleryHorizontalEnd },
+  { id: "library", label: "Library", icon: Library },
   { id: "ai", label: "AI explain", icon: Sparkles },
 ];
 
